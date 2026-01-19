@@ -1,142 +1,85 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# ============================================================
-# Ubuntu Server Bootstrap - Installer (idempotent)
-# Repo: mikuchan1004/ubuntu-server-bootstrap
-# ============================================================
-#
-# Usage:
-#   sudo bash install.sh
-#
-# Optional env:
-#   REPO_URL   (default: https://github.com/mikuchan1004/ubuntu-server-bootstrap.git)
-#   BRANCH     (default: main)
-#   INSTALL_DIR(default: /opt/ubuntu-server-bootstrap)
-#
-#   TIMEZONE   (default: Asia/Seoul)
-#   LOCALE     (default: ko_KR.UTF-8)
-#   KEEP_MESSAGES_EN (default: 1)  # sets LC_MESSAGES=C
-#
-#   SWAP_SIZE  (default: 2G)      # "0" disables swap creation
-#   JOURNAL_MAX_USE (default: 200M)
-#   JOURNAL_RUNTIME_MAX_USE (default: 50M)
-#
-#   SSH_PASSWORD_AUTH (default: yes)  # yes/no
-#   ADMIN_USER (optional)             # e.g. admin
-#   ADMIN_PUBKEY (optional)           # e.g. "ssh-ed25519 AAAA..."
-#   ADMIN_PASSWORD (optional)         # sets password non-interactively (use carefully)
-# ============================================================
+# ==========================================================
+# Ubuntu Server Bootstrap - install.sh
+# - Idempotent: safe to run multiple times
+# - Safe SSH changes: validate before apply
+# - Logs: /var/log/ubuntu-server-bootstrap.log
+# ==========================================================
 
-REPO_URL="${REPO_URL:-https://github.com/mikuchan1004/ubuntu-server-bootstrap.git}"
-BRANCH="${BRANCH:-main}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/ubuntu-server-bootstrap}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/scripts/00-common.sh"
 
-LOG_DIR="/var/log/ubuntu-server-bootstrap"
-TS="$(date +%Y%m%d-%H%M%S)"
-LOG_FILE="$LOG_DIR/install-$TS.log"
+ADMIN_USER="admin"
+ADMIN_SHELL="/bin/bash"
+ADMIN_PUBKEY=""              # Public key line (ssh-ed25519... or ssh-rsa...)
+ALLOW_PASSWORD_SSH="true"    # true/false
+SET_ADMIN_PASSWORD=""        # optional: sets admin password (not recommended to pass via CLI)
+TIMEZONE="Asia/Seoul"
 
-msg()  { echo "[*] $*"; }
-ok()   { echo "[+] $*"; }
-warn() { echo "[!] $*" >&2; }
-die()  { echo "[-] $*" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1; }
+SWAP_MB="2048"
+JOURNAL_MAX_USE="200M"
+JOURNAL_MAX_FILE="50M"
 
-on_error() {
-  local code=$?
-  warn "Installer failed (exit=$code)"
-  warn "Log: $LOG_FILE"
-  exit "$code"
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo bash install.sh [options]
+
+Options:
+  --admin-user <name>                (default: admin)
+  --admin-pubkey "<ssh public key>"  (optional) Installs into ~/.ssh/authorized_keys
+  --allow-password-ssh <true|false>  (default: true)
+  --set-admin-password "<pw>"        (optional) Sets admin password (security risk if typed in shell history)
+  --timezone <TZ>                    (default: Asia/Seoul)
+  --swap-mb <MB>                     (default: 2048)
+  --journal-max-use <size>           (default: 200M)
+  --journal-max-file <size>          (default: 50M)
+
+Examples:
+  sudo bash install.sh --admin-user admin --admin-pubkey "$(cat ./keys/admin.pub)" --allow-password-ssh true
+
+Notes:
+  - SSH "Connection timed out" is almost always OCI NSG/Security List issue (cloud-side), not server-side.
+  - This script standardizes server configuration safely and repeatably.
+EOF
 }
-trap on_error ERR
 
-if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-  need sudo || die "sudo not found. Run as root."
-  msg "Re-running with sudo..."
-  exec sudo -E bash "$0"
-fi
-
-mkdir -p "$LOG_DIR"
-touch "$LOG_FILE"
-chmod 600 "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-msg "Ubuntu Server Bootstrap installer"
-msg "Repo   : $REPO_URL"
-msg "Branch : $BRANCH"
-msg "Dir    : $INSTALL_DIR"
-msg "Log    : $LOG_FILE"
-
-[[ -r /etc/os-release ]] || die "/etc/os-release not found"
-. /etc/os-release
-[[ "${ID:-}" == "ubuntu" ]] || die "Unsupported OS: ${ID:-unknown}"
-ok "OS: ${PRETTY_NAME:-Ubuntu}"
-
-export DEBIAN_FRONTEND=noninteractive
-
-msg "Updating apt cache..."
-apt-get update -y
-
-for pkg in git ca-certificates curl; do
-  if ! need "$pkg"; then
-    msg "Installing $pkg..."
-    apt-get install -y "$pkg"
-  fi
-done
-ok "Dependencies ready"
-
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-  msg "Updating existing repository..."
-  git -C "$INSTALL_DIR" fetch origin
-  git -C "$INSTALL_DIR" checkout "$BRANCH"
-  git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
-else
-  msg "Cloning repository..."
-  mkdir -p "$INSTALL_DIR"
-  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
-fi
-ok "Repository ready"
-
-SCRIPTS="$INSTALL_DIR/scripts"
-[[ -d "$SCRIPTS" ]] || die "Missing scripts directory: $SCRIPTS"
-
-required=(
-  init-ubuntu-server.sh
-  setup-login-banner.sh
-  setup-motd.sh
-  create-admin-user.sh
-)
-
-for f in "${required[@]}"; do
-  [[ -f "$SCRIPTS/$f" ]] || die "Missing script: $SCRIPTS/$f"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --admin-user) ADMIN_USER="$2"; shift 2;;
+    --admin-pubkey) ADMIN_PUBKEY="$2"; shift 2;;
+    --allow-password-ssh) ALLOW_PASSWORD_SSH="$2"; shift 2;;
+    --set-admin-password) SET_ADMIN_PASSWORD="$2"; shift 2;;
+    --timezone) TIMEZONE="$2"; shift 2;;
+    --swap-mb) SWAP_MB="$2"; shift 2;;
+    --journal-max-use) JOURNAL_MAX_USE="$2"; shift 2;;
+    --journal-max-file) JOURNAL_MAX_FILE="$2"; shift 2;;
+    -h|--help) usage; exit 0;;
+    *) die "Unknown option: $1";;
+  esac
 done
 
-msg "Normalizing scripts (CRLF->LF) and chmod +x..."
-for f in "${required[@]}"; do
-  sed -i 's/\r$//' "$SCRIPTS/$f"
-  chmod +x "$SCRIPTS/$f"
-done
-ok "Scripts ready"
+require_root
+ensure_ubuntu
 
-msg "1/3 init-ubuntu-server.sh"
-bash "$SCRIPTS/init-ubuntu-server.sh"
+log "=== Ubuntu Server Bootstrap starting ==="
+log "ADMIN_USER=$ADMIN_USER"
+log "ALLOW_PASSWORD_SSH=$ALLOW_PASSWORD_SSH"
+log "TIMEZONE=$TIMEZONE"
 
-msg "2/3 setup-login-banner.sh"
-bash "$SCRIPTS/setup-login-banner.sh"
+source "$SCRIPT_DIR/scripts/10-init.sh"
+source "$SCRIPT_DIR/scripts/20-admin-user.sh"
+source "$SCRIPT_DIR/scripts/30-ssh.sh"
+source "$SCRIPT_DIR/scripts/40-motd-banner.sh"
 
-msg "3/3 setup-motd.sh"
-bash "$SCRIPTS/setup-motd.sh"
+run_10_init "$TIMEZONE" "$SWAP_MB" "$JOURNAL_MAX_USE" "$JOURNAL_MAX_FILE"
+run_20_admin_user "$ADMIN_USER" "$ADMIN_SHELL" "$ADMIN_PUBKEY" "$SET_ADMIN_PASSWORD"
+run_30_ssh "$ALLOW_PASSWORD_SSH"
+run_40_motd_banner
 
-if [[ -n "${ADMIN_USER:-}" ]]; then
-  msg "Ensuring admin user: $ADMIN_USER"
-  if [[ -n "${ADMIN_PUBKEY:-}" ]]; then
-    bash "$SCRIPTS/create-admin-user.sh" "$ADMIN_USER" "$ADMIN_PUBKEY"
-  else
-    bash "$SCRIPTS/create-admin-user.sh" "$ADMIN_USER"
-  fi
-  ok "Admin user ensured: $ADMIN_USER"
-fi
-
-ok "Bootstrap completed successfully"
-msg "Tip: reconnect SSH to see banner/MOTD changes clearly."
-msg "Log saved: $LOG_FILE"
+log "=== Done ==="
+log "Log file: $LOG_FILE"
+log "Tip: Validate cloud-side port 22 first -> from your PC:"
+log "  PowerShell: Test-NetConnection <PUBLIC_IP> -Port 22"
