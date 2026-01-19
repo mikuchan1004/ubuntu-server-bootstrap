@@ -1,5 +1,4 @@
-cat > README.md <<'EOF'
-# Ubuntu Server Bootstrap (Template)
+-# Ubuntu Server Bootstrap (Template)
 
 Ubuntu 서버를 “운영 가능한 기본 상태”로 빠르게 맞추는 스크립트 모음입니다.  
 이 레포는 **Template repository**로 사용하도록 구성되어 있습니다.
