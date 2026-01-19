@@ -1,8 +1,6 @@
-cat > templates/issue.net <<'EOF'
 ********************************************************************
 *  WARNING: Authorized access only.                               *
 *                                                                  *
 *  All activity may be monitored and recorded.                     *
 *  Disconnect immediately if you are not an authorized user.       *
 ********************************************************************
-EOF
