@@ -1,34 +1,39 @@
-sudo tee /usr/local/sbin/setup-login-banner.sh > /dev/null <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ $EUID -eq 0 ]] || { echo "Run with sudo"; exit 1; }
 
-BANNER_FILE="/etc/issue.net"
-SSHD_DROPIN="/etc/ssh/sshd_config.d/98-banner.conf"
+msg()  { echo "[*] $*"; }
+ok()   { echo "[+] $*"; }
+warn() { echo "[!] $*" >&2; }
+die()  { echo "[-] $*"; exit 1; }
 
-cat > "$BANNER_FILE" <<'B'
+trap 'warn "setup-login-banner.sh failed"; exit 1' ERR
+[[ "${EUID:-$(id -u)}" -eq 0 ]] || die "Run as root (use sudo)."
+
+TEMPLATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../templates" && pwd)"
+ISSUE_NET_SRC="$TEMPLATE_DIR/issue.net"
+ISSUE_NET_DST="/etc/issue.net"
+
+msg "Installing /etc/issue.net banner..."
+if [[ -f "$ISSUE_NET_SRC" ]]; then
+  install -m 0644 "$ISSUE_NET_SRC" "$ISSUE_NET_DST"
+else
+  cat > "$ISSUE_NET_DST" <<'EOF'
 ********************************************************************
 *  WARNING: Authorized access only.                               *
 *                                                                  *
 *  All activity may be monitored and recorded.                     *
 *  Disconnect immediately if you are not an authorized user.       *
 ********************************************************************
-B
-
-mkdir -p /etc/ssh/sshd_config.d
-cat > "$SSHD_DROPIN" <<EOC
-# Managed by setup-login-banner.sh
-Banner $BANNER_FILE
-EOC
-
-if sshd -t; then
-  systemctl restart ssh || systemctl restart sshd
-  echo "[+] SSH pre-login banner enabled."
-else
-  echo "[-] sshd config validation failed."
-  exit 1
-fi
 EOF
+  chmod 0644 "$ISSUE_NET_DST"
+fi
 
-sudo chmod +x /usr/local/sbin/setup-login-banner.sh
-sudo /usr/local/sbin/setup-login-banner.sh
+msg "Enabling SSH banner..."
+cat > /etc/ssh/sshd_config.d/98-banner.conf <<'EOF'
+Banner /etc/issue.net
+EOF
+chmod 0644 /etc/ssh/sshd_config.d/98-banner.conf
+
+sshd -t
+systemctl restart ssh
+ok "Login banner configured"
