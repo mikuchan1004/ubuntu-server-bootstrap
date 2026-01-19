@@ -1,160 +1,154 @@
-sudo tee /usr/local/sbin/init-ubuntu-server.sh > /dev/null <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# =====================================================
-# Ubuntu Server Initial Setup (Final - Operation Ready)
-#
-# ✔ Timezone: Asia/Seoul
-# ✔ Locale: ko_KR.UTF-8 (messages kept in English)
-# ✔ SSH hardening (NO key-only enforcement)
-# ✔ Swap (2G) + memory tuning
-# ✔ journald log size limit
-# ✔ UFW + Fail2ban
-#
-# Safe for real servers (password login kept)
-# =====================================================
+msg()  { echo "[*] $*"; }
+ok()   { echo "[+] $*"; }
+warn() { echo "[!] $*" >&2; }
+die()  { echo "[-] $*"; exit 1; }
 
-# ---------- root check ----------
-if [[ $EUID -ne 0 ]]; then
-  echo "[-] Run as root: sudo init-ubuntu-server.sh"
-  exit 1
-fi
+trap 'warn "init-ubuntu-server.sh failed"; exit 1' ERR
 
-log() { echo "[*] $*"; }
-ok()  { echo "[+] $*"; }
+[[ "${EUID:-$(id -u)}" -eq 0 ]] || die "Run as root (use sudo)."
 
-# ---------- base packages ----------
-log "apt update"
-apt update -y
+export DEBIAN_FRONTEND=noninteractive
 
-log "install base utilities"
-apt install -y \
-  curl wget git ca-certificates gnupg lsb-release \
-  htop tmux vim nano unzip zip \
-  net-tools dnsutils \
-  software-properties-common \
-  locales
+TIMEZONE="${TIMEZONE:-Asia/Seoul}"
+LOCALE="${LOCALE:-ko_KR.UTF-8}"
+KEEP_MESSAGES_EN="${KEEP_MESSAGES_EN:-1}"
 
-# ---------- timezone ----------
-log "set timezone: Asia/Seoul"
-timedatectl set-timezone Asia/Seoul
-ok "timezone set"
+SWAP_SIZE="${SWAP_SIZE:-2G}"
+JOURNAL_MAX_USE="${JOURNAL_MAX_USE:-200M}"
+JOURNAL_RUNTIME_MAX_USE="${JOURNAL_RUNTIME_MAX_USE:-50M}"
 
-# ---------- locale ----------
-log "configure locale: ko_KR.UTF-8"
-apt install -y language-pack-ko || true
-sed -i 's/^[# ]*\(ko_KR\.UTF-8 UTF-8\)/\1/' /etc/locale.gen
-locale-gen
-update-locale LANG=ko_KR.UTF-8 LC_ALL=ko_KR.UTF-8
+SSH_PASSWORD_AUTH="${SSH_PASSWORD_AUTH:-yes}"
 
-# keep messages in English (better for googling errors)
-cat > /etc/profile.d/00-locale.sh <<'EOP'
-export LANG=ko_KR.UTF-8
-export LC_ALL=ko_KR.UTF-8
-export LC_MESSAGES=C
-EOP
-chmod 644 /etc/profile.d/00-locale.sh
+msg "Installing baseline packages..."
+apt-get update -y
+apt-get install -y --no-install-recommends \
+  locales tzdata \
+  ufw fail2ban \
+  curl ca-certificates \
+  git \
+  openssh-server \
+  coreutils procps
 
-# ---------- fonts (safe even on servers) ----------
-log "install Korean fonts"
-apt install -y fonts-nanum fonts-noto-cjk || true
-fc-cache -f -v >/dev/null 2>&1 || true
+ok "Packages ready"
 
-# ---------- SSH hardening (no key-only lockout) ----------
-log "apply SSH hardening"
-apt install -y openssh-server
+msg "Setting timezone: $TIMEZONE"
+timedatectl set-timezone "$TIMEZONE" || true
+ok "Timezone set"
 
-SSHD_DIR="/etc/ssh/sshd_config.d"
-mkdir -p "$SSHD_DIR"
-
-cat > "$SSHD_DIR/99-hardening.conf" <<'EOP'
-# Managed by init-ubuntu-server.sh
-PermitRootLogin no
-MaxAuthTries 4
-LoginGraceTime 30
-ClientAliveInterval 300
-ClientAliveCountMax 2
-UseDNS no
-X11Forwarding no
-AllowTcpForwarding no
-KbdInteractiveAuthentication no
-EOP
-
-if sshd -t; then
-  systemctl restart ssh || systemctl restart sshd
-  ok "sshd restarted"
-else
-  echo "[-] sshd config error, aborting"
-  exit 1
-fi
-
-# ---------- swap ----------
-log "configure swap (2G)"
-SWAPFILE="/swapfile"
-if ! swapon --show | grep -q "$SWAPFILE"; then
-  if ! [[ -f "$SWAPFILE" ]]; then
-    fallocate -l 2G "$SWAPFILE" || dd if=/dev/zero of="$SWAPFILE" bs=1M count=2048
-    chmod 600 "$SWAPFILE"
-    mkswap "$SWAPFILE" >/dev/null
+msg "Configuring locale: $LOCALE"
+if ! locale -a | grep -qi "^${LOCALE}$"; then
+  if ! grep -qE "^[# ]*${LOCALE}[[:space:]]+UTF-8" /etc/locale.gen; then
+    echo "${LOCALE} UTF-8" >> /etc/locale.gen
+  else
+    sed -i "s/^[# ]*${LOCALE}[[:space:]]\+UTF-8/${LOCALE} UTF-8/" /etc/locale.gen
   fi
-  swapon "$SWAPFILE"
-  grep -q '/swapfile' /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+  locale-gen "$LOCALE"
 fi
-ok "swap active"
 
-# ---------- memory tuning ----------
-log "apply sysctl tuning"
-cat > /etc/sysctl.d/99-tuning.conf <<'EOP'
-vm.swappiness = 10
-vm.vfs_cache_pressure = 50
-EOP
-sysctl --system >/dev/null
+update-locale LANG="$LOCALE"
+if [[ "$KEEP_MESSAGES_EN" == "1" ]]; then
+  update-locale LC_MESSAGES=C
+fi
+ok "Locale configured"
 
-# ---------- journald limits ----------
-log "limit journald size"
+if [[ "$SWAP_SIZE" != "0" ]]; then
+  msg "Ensuring swap exists (size: $SWAP_SIZE)"
+  if swapon --show | grep -q .; then
+    ok "Swap already enabled"
+  else
+    if [[ ! -f /swapfile ]]; then
+      if command -v fallocate >/dev/null 2>&1; then
+        fallocate -l "$SWAP_SIZE" /swapfile
+      else
+        dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+      fi
+      chmod 600 /swapfile
+      mkswap /swapfile
+    fi
+    swapon /swapfile
+    grep -qE '^/swapfile[[:space:]]' /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    ok "Swap enabled"
+  fi
+else
+  msg "SWAP_SIZE=0 (swap creation disabled)"
+fi
+
+msg "Applying sysctl tuning..."
+cat > /etc/sysctl.d/99-ubuntu-server-bootstrap.conf <<'EOF'
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+EOF
+sysctl --system >/dev/null 2>&1 || true
+ok "Sysctl tuned"
+
+msg "Limiting journald size..."
 mkdir -p /etc/systemd/journald.conf.d
-cat > /etc/systemd/journald.conf.d/99-limits.conf <<'EOP'
+cat > /etc/systemd/journald.conf.d/99-ubuntu-server-bootstrap.conf <<EOF
 [Journal]
-SystemMaxUse=500M
-SystemMaxFileSize=100M
-MaxRetentionSec=14day
+SystemMaxUse=${JOURNAL_MAX_USE}
+RuntimeMaxUse=${JOURNAL_RUNTIME_MAX_USE}
 Compress=yes
-EOP
+EOF
 systemctl restart systemd-journald
+ok "journald configured"
 
-# ---------- firewall + fail2ban ----------
-log "enable UFW + Fail2ban"
-apt install -y ufw fail2ban
-ufw allow OpenSSH >/dev/null
-ufw --force enable >/dev/null
+msg "Configuring UFW..."
+ufw --force reset || true
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow OpenSSH
+ufw --force enable
+ok "UFW enabled"
 
-cat > /etc/fail2ban/jail.d/sshd.local <<'EOP'
+msg "Configuring Fail2ban..."
+mkdir -p /etc/fail2ban/jail.d
+cat > /etc/fail2ban/jail.d/sshd.local <<'EOF'
 [sshd]
 enabled = true
 maxretry = 5
 findtime = 10m
 bantime  = 1h
-EOP
-systemctl enable --now fail2ban >/dev/null
+EOF
+systemctl enable --now fail2ban
+ok "Fail2ban enabled"
 
-# ---------- cleanup ----------
-log "cleanup"
-apt autoremove -y
-apt clean
-
-echo
-ok "ALL DONE"
-echo "➡ SSH 재접속 권장 (reboot 불필요)"
-echo
-echo "확인:"
-echo "  timedatectl"
-echo "  locale"
-echo "  swapon --show"
-echo "  journalctl --disk-usage"
-echo "  fail2ban-client status sshd"
-echo "  sshd -T | egrep 'permitrootlogin|maxauthtries'"
+msg "Configuring SSH (root login off + auth policy override)..."
+cat > /etc/ssh/sshd_config.d/99-hardening.conf <<'EOF'
+PermitRootLogin no
+PubkeyAuthentication yes
+UsePAM yes
+X11Forwarding no
+AllowTcpForwarding yes
+ClientAliveInterval 300
+ClientAliveCountMax 2
 EOF
 
-sudo chmod +x /usr/local/sbin/init-ubuntu-server.sh
-echo "✔ saved to /usr/local/sbin/init-ubuntu-server.sh"
+AUTH_FILE="/etc/ssh/sshd_config.d/999-auth-policy.conf"
+if [[ "${SSH_PASSWORD_AUTH,,}" == "no" ]]; then
+  cat > "$AUTH_FILE" <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM yes
+EOF
+else
+  cat > "$AUTH_FILE" <<'EOF'
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+UsePAM yes
+EOF
+fi
+chmod 644 "$AUTH_FILE"
+
+if [[ -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ]]; then
+  sed -i 's/^[[:space:]]*PasswordAuthentication[[:space:]]\+no/#PasswordAuthentication no/' /etc/ssh/sshd_config.d/60-cloudimg-settings.conf || true
+  sed -i 's/^[[:space:]]*KbdInteractiveAuthentication[[:space:]]\+no/#KbdInteractiveAuthentication no/' /etc/ssh/sshd_config.d/60-cloudimg-settings.conf || true
+fi
+
+sshd -t
+systemctl restart ssh
+ok "SSH configured"
+
+ok "Base initialization completed"
