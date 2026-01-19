@@ -1,20 +1,30 @@
-cat > templates/motd-99-custom.sh <<'EOF'
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 HOST="$(hostname)"
-UPTIME="$(uptime -p 2>/dev/null || true)"
-LOAD="$(cat /proc/loadavg 2>/dev/null | awk '{print $1" "$2" "$3}' || true)"
-IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-DISK="$(df -h / 2>/dev/null | awk 'NR==2{print $4 " free / " $2 " total ("$5" used)"}' || true)"
-MEM="$(free -h 2>/dev/null | awk '/Mem:/ {print $7 " avail / " $2 " total"}' || true)"
-SWAP="$(free -h 2>/dev/null | awk '/Swap:/ {print $4 " free / " $2 " total"}' || true)"
+IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 
-echo
-echo "🖥️  $HOST  |  IP: ${IP:-N/A}"
-echo "⏱️  Uptime: ${UPTIME:-N/A}   |  Load: ${LOAD:-N/A}"
-echo "💾 Disk (/): ${DISK:-N/A}"
-echo "🧠 Mem: ${MEM:-N/A}   |  Swap: ${SWAP:-N/A}"
-echo "🔐 Notice: Authorized use only."
-echo
+UPTIME="$(uptime -p | sed 's/^up //')"
+LOAD="$(awk '{print $1" "$2" "$3}' /proc/loadavg)"
+
+DISK_LINE="$(df -h / 2>/dev/null | awk 'NR==2{print $4" free / "$2" total ("$5" used)"}')"
+
+MEM_TOTAL="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+MEM_AVAIL="$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)"
+
+SWAP_TOTAL_K="$(awk '/SwapTotal/ {print $2}' /proc/meminfo)"
+SWAP_FREE_K="$(awk '/SwapFree/ {print $2}' /proc/meminfo)"
+swap_gib() { awk -v k="$1" 'BEGIN{printf "%.1f", k/1024/1024}'; }
+
+SWAP_TOTAL="$(swap_gib "$SWAP_TOTAL_K")"
+SWAP_FREE="$(swap_gib "$SWAP_FREE_K")"
+
+cat <<EOF
+
+🖥️  ${HOST}  |  IP: ${IP:-N/A}
+⏱️  Uptime: up ${UPTIME}   |  Load: ${LOAD}
+💾 Disk (/): ${DISK_LINE}
+🧠 Mem: ${MEM_AVAIL}Mi avail / ${MEM_TOTAL}Mi total   |  Swap: ${SWAP_FREE}Gi free / ${SWAP_TOTAL}Gi total
+🔐 Notice: Authorized use only.
+
 EOF
