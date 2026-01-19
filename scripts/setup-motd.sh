@@ -1,37 +1,23 @@
-sudo tee /usr/local/sbin/setup-motd.sh > /dev/null <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ $EUID -eq 0 ]] || { echo "Run with sudo"; exit 1; }
 
-# 기본 정적 motd는 끄고, update-motd로 관리
-: > /etc/motd || true
+msg()  { echo "[*] $*"; }
+ok()   { echo "[+] $*"; }
+warn() { echo "[!] $*" >&2; }
+die()  { echo "[-] $*"; exit 1; }
 
-MOTD_SCRIPT="/etc/update-motd.d/99-custom"
+trap 'warn "setup-motd.sh failed"; exit 1' ERR
+[[ "${EUID:-$(id -u)}" -eq 0 ]] || die "Run as root (use sudo)."
 
-cat > "$MOTD_SCRIPT" <<'M'
-#!/usr/bin/env bash
-set -e
+TEMPLATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../templates" && pwd)"
+MOTD_SRC="$TEMPLATE_DIR/motd-99-custom.sh"
+MOTD_DST="/etc/update-motd.d/99-ubuntu-server-bootstrap"
 
-HOST="$(hostname)"
-UPTIME="$(uptime -p 2>/dev/null || true)"
-LOAD="$(cat /proc/loadavg 2>/dev/null | awk '{print $1" "$2" "$3}' || true)"
-IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-DISK="$(df -h / 2>/dev/null | awk 'NR==2{print $4 " free / " $2 " total ("$5" used)"}' || true)"
-MEM="$(free -h 2>/dev/null | awk '/Mem:/ {print $7 " avail / " $2 " total"}' || true)"
-SWAP="$(free -h 2>/dev/null | awk '/Swap:/ {print $4 " free / " $2 " total"}' || true)"
+msg "Installing MOTD script..."
+install -m 0755 "$MOTD_SRC" "$MOTD_DST"
 
-echo
-echo "🖥️  $HOST  |  IP: ${IP:-N/A}"
-echo "⏱️  Uptime: ${UPTIME:-N/A}   |  Load: ${LOAD:-N/A}"
-echo "💾 Disk (/): ${DISK:-N/A}"
-echo "🧠 Mem: ${MEM:-N/A}   |  Swap: ${SWAP:-N/A}"
-echo "🔐 Notice: Authorized use only."
-echo
-M
+if [[ -f /etc/default/motd-news ]]; then
+  sed -i 's/^[# ]*ENABLED=.*/ENABLED=0/' /etc/default/motd-news || true
+fi
 
-chmod +x "$MOTD_SCRIPT"
-echo "[+] MOTD installed at $MOTD_SCRIPT"
-EOF
-
-sudo chmod +x /usr/local/sbin/setup-motd.sh
-sudo /usr/local/sbin/setup-motd.sh
+ok "MOTD configured (reconnect SSH to see it)"
