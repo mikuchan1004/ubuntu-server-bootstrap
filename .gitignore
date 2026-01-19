@@ -1,0 +1,11 @@
+cat > .gitignore <<'EOF'
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temp
+*.tmp
+*.bak
+EOF
