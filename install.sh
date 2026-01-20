@@ -4,12 +4,11 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/scripts/00-common.sh"
 
-# Defaults
 ADMIN_USER="admin"
 ADMIN_SHELL="/bin/bash"
 ADMIN_PUBKEY=""
 ALLOW_PASSWORD_SSH="true"
-SET_ADMIN_PASSWORD=""   # empty = no password change
+SET_ADMIN_PASSWORD=""
 TIMEZONE="Asia/Seoul"
 PROFILE="dev"
 DISABLE_CLOUD_INIT="false"
@@ -30,15 +29,15 @@ Usage:
 Options:
   --profile dev|prod            (default: dev)
   --admin-user <name>           (default: admin)
-  --admin-pubkey "<ssh pubkey>" install authorized_keys for admin
+  --admin-pubkey "<ssh pubkey>" (optional) install/replace admin authorized_keys
   --allow-password-ssh true|false
-  --set-admin-password "<pw>"   set admin password (optional)
+  --set-admin-password "<pw>"   (optional)
   --disable-cloud-init
-  --timezone <TZ>               (default: Asia/Seoul)
+  --timezone <TZ>
 
-  --swap-mb <MB>                (default: 2048)
-  --journal-max-use <SIZE>      (default: 200M)
-  --journal-max-file <SIZE>     (default: 50M)
+  --swap-mb <MB>
+  --journal-max-use <SIZE>
+  --journal-max-file <SIZE>
 
   --enable-fail2ban true|false
   --enable-ufw true|false
@@ -71,6 +70,7 @@ done
 
 require_root
 ensure_ubuntu
+
 validate_bool "$ALLOW_PASSWORD_SSH" "allow-password-ssh"
 validate_bool "$DISABLE_CLOUD_INIT" "disable-cloud-init"
 validate_bool "$ENABLE_FAIL2BAN" "enable-fail2ban"
@@ -84,35 +84,41 @@ source "$SCRIPT_DIR/scripts/10-init.sh"
 source "$SCRIPT_DIR/scripts/20-admin-user.sh"
 source "$SCRIPT_DIR/scripts/30-ssh.sh"
 source "$SCRIPT_DIR/scripts/40-motd-banner.sh"
-source "$SCRIPT_DIR/scripts/50-fail2ban.sh"
-source "$SCRIPT_DIR/scripts/60-ufw.sh"
-source "$SCRIPT_DIR/scripts/70-unattended-upgrades.sh"
+# (있으면) 추가 스크립트들
+[[ -f "$SCRIPT_DIR/scripts/50-fail2ban.sh" ]] && source "$SCRIPT_DIR/scripts/50-fail2ban.sh"
+[[ -f "$SCRIPT_DIR/scripts/60-ufw.sh" ]] && source "$SCRIPT_DIR/scripts/60-ufw.sh"
+[[ -f "$SCRIPT_DIR/scripts/70-unattended-upgrades.sh" ]] && source "$SCRIPT_DIR/scripts/70-unattended-upgrades.sh"
 
 run_05_precheck
-
-if [[ "$PROFILE" == "prod" ]]; then
-  ALLOW_PASSWORD_SSH="false"
-  # 잠금 사고 방지: 키가 없는데 비번까지 끄면 끝장
-  [[ -n "$ADMIN_PUBKEY" ]] || die "prod 프로필에서는 --admin-pubkey가 필수입니다 (잠금 방지)"
-fi
-
 run_10_init "$TIMEZONE" "$SWAP_MB" "$JOURNAL_MAX_USE" "$JOURNAL_MAX_FILE"
+
+# 1) admin 유저/키부터 정리 (prod 잠금사고 방지의 핵심)
 run_20_admin_user "$ADMIN_USER" "$ADMIN_SHELL" "$ADMIN_PUBKEY" "$SET_ADMIN_PASSWORD"
 
-# SSH는 마지막에, 그리고 reload/검증 후 적용 (세션 끊김 최소화)
+# 2) prod면: 비번 SSH 끄기 전에 "admin 키 존재"를 반드시 확인 (C 루트)
+if [[ "$PROFILE" == "prod" ]]; then
+  ALLOW_PASSWORD_SSH="false"
+
+  ADMIN_AUTH="/home/${ADMIN_USER}/.ssh/authorized_keys"
+  if [[ ! -s "$ADMIN_AUTH" ]]; then
+    die "prod 프로필: ${ADMIN_AUTH} 가 비어있거나 없습니다. (잠금 방지) --admin-pubkey로 키를 넣거나, 파일을 먼저 준비하세요."
+  fi
+
+  log "prod check OK: admin authorized_keys present"
+fi
+
+# 3) SSH 적용 (검증 + reload는 30-ssh.sh에서)
 run_30_ssh "$ALLOW_PASSWORD_SSH"
 
 run_40_motd_banner
 
-if [[ "$ENABLE_FAIL2BAN" == "true" ]]; then
+if [[ "$ENABLE_FAIL2BAN" == "true" ]] && declare -F run_50_fail2ban >/dev/null; then
   run_50_fail2ban
 fi
-
-if [[ "$ENABLE_UFW" == "true" ]]; then
+if [[ "$ENABLE_UFW" == "true" ]] && declare -F run_60_ufw_allow_ssh >/dev/null; then
   run_60_ufw_allow_ssh
 fi
-
-if [[ "$ENABLE_UNATTENDED_UPGRADES" == "true" ]]; then
+if [[ "$ENABLE_UNATTENDED_UPGRADES" == "true" ]] && declare -F run_70_unattended_upgrades >/dev/null; then
   run_70_unattended_upgrades
 fi
 
