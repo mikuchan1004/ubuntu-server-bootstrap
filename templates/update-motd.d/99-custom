@@ -61,14 +61,10 @@ echo "========================================"
 echo " 🖥  서버 상태 요약"
 echo "----------------------------------------"
 echo " 📅 현재 시간  : $(date '+%Y-%m-%d %H:%M:%S')"
-
-if [[ "$LOGIN_USER" == "$RUN_AS" ]]; then
-  echo " 👤 로그인 계정: ${LOGIN_USER}"
-else
-  echo " 👤 로그인 계정: ${LOGIN_USER} (현재 권한: ${RUN_AS})"
+echo " 👤 로그인 계정: ${LOGIN_USER}"
+if [[ "$CLIENT_IP" != "(콘솔/로컬)" ]]; then
+  echo " 🌐 접속 IP    : ${CLIENT_IP}"
 fi
-
-echo " 🌐 접속 IP    : ${CLIENT_IP}"
 echo " ⏱  업타임     : $(uptime -p 2>/dev/null || echo 'N/A')"
 echo " 💾 디스크(/)  : ${DISK_FREE} 여유"
 echo " 🧠 메모리     : ${MEM_AVAIL} 여유"
