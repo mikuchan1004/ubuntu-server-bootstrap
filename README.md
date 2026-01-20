@@ -87,7 +87,36 @@ sudo bash install.sh   --admin-user admin   --admin-pubkey "$(cat keys/admin.pub
 확인:
 ```bash
 sudo sshd -T | egrep 'passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication'
+
 ```
+## 🖥 SSH 로그인 배너 & MOTD (한글)
+
+Ubuntu 서버에서 SSH 로그인 시  
+한글 경고 배너와 서버 상태 요약(MOTD)을 표시합니다.
+
+### 적용 내용
+- SSH 로그인 전 경고 배너 (`/etc/issue.net`)
+- 로그인 후 환영 메시지 (`/etc/motd`)
+- 로그인 시 서버 상태 요약 (업타임, 디스크, 메모리, Fail2Ban)
+- 불필요한 영어 MOTD 메시지 비활성화
+
+### 템플릿 구조
+templates/
+├─ issue.net
+├─ motd
+└─ update-motd.d/
+└─ 99-custom
+
+### 적용 방법 (서버에서 실행)
+
+sudo bash scripts/40-motd-banner.sh
+
+적용 후 SSH 재접속 시 한글 메시지가 표시됩니다.
+
+참고
+Ubuntu의 update-motd 시스템을 사용합니다.
+
+99-custom 파일은 확장자 없이 배치해야 정상 실행됩니다.
 
 ---
 
