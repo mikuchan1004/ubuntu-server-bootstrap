@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # Custom MOTD (Korean) - server status summary
 
@@ -18,7 +19,6 @@ get_client_ip() {
 }
 
 get_login_user() {
-  # SSH 로그인 사용자: sudo/su로 root가 되어도 원래 사용자 유지
   if [ -n "${SUDO_USER:-}" ]; then
     echo "${SUDO_USER}"
     return
@@ -34,13 +34,11 @@ get_login_user() {
   whoami
 }
 
-# SSH 접속 IP 캐시 (sudo/su로 들어올 때를 대비)
 if [ -n "${SSH_CLIENT:-}" ]; then
   export LOGIN_IP="${SSH_CLIENT%% *}"
 fi
 
 CLIENT_IP="$(get_client_ip)"
-
 LOGIN_USER="$(get_login_user)"
 RUN_AS="$(whoami)"
 
@@ -49,7 +47,6 @@ echo " 🖥  서버 상태 요약"
 echo "----------------------------------------"
 echo " 📅 현재 시간  : $(date '+%Y-%m-%d %H:%M:%S')"
 
-# 로그인 사용자와 실행 사용자가 다르면 둘 다 보여주기
 if [ "$LOGIN_USER" = "$RUN_AS" ]; then
   echo " 👤 로그인 계정: ${LOGIN_USER}"
 else
@@ -61,17 +58,14 @@ echo " ⏱  업타임     : $(uptime -p)"
 echo " 💾 디스크(/)  : $(df -h / | awk 'NR==2 {print $4}') 여유"
 echo " 🧠 메모리     : $(free -h | awk '/^Mem:/ {print $7}') 여유"
 
-# Fail2Ban 상태 + 차단 IP 목록
 if [ "$(id -u)" -eq 0 ]; then
   BANNED="$(timeout 1 fail2ban-client status sshd 2>/dev/null | awk -F': ' '/Currently banned/ {print $2}')"
   [ -n "$BANNED" ] || BANNED="0"
   echo " 🔐 Fail2Ban   : ${BANNED} IP 차단 중"
 
   if [ "$BANNED" != "0" ]; then
-    # 차단 IP 목록(가능하면)
     IPS="$(timeout 1 fail2ban-client get sshd banip 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')"
     if [ -n "$IPS" ]; then
-      # 너무 길면 앞부분만 표시 (최대 6개)
       COUNT="$(echo "$IPS" | wc -w | tr -d ' ')"
       if [ "$COUNT" -le 6 ]; then
         echo " 🧱 차단 IP    : ${IPS}"
@@ -88,3 +82,4 @@ else
 fi
 
 echo "========================================"
+
