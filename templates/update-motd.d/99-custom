@@ -1,22 +1,61 @@
-sudo tee /etc/update-motd.d/99-custom >/dev/null <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
+# Custom MOTD (Korean) - server status summary
+set -Eeuo pipefail
 
-# 실제 로그인 사용자 (sudo/su로 바뀌어도 원래 사용자)
-LOGIN_USER="$(logname 2>/dev/null || echo unknown)"
+# --- helpers ---------------------------------------------------------------
+
+get_login_user() {
+  # sudo/su에도 강한 "원래 로그인 사용자"
+  logname 2>/dev/null || echo "unknown"
+}
+
+get_client_ip() {
+  # PAM/update-motd 환경에서도 가장 잘 잡힘
+  local ip
+  ip="$(who -u am i 2>/dev/null | awk '{print $NF}' | tr -d '()' || true)"
+  if [[ -n "${ip:-}" && "$ip" != "-" ]]; then
+    echo "$ip"
+    return
+  fi
+
+  # fallback: SSH 환경변수
+  if [[ -n "${SSH_CLIENT:-}" ]]; then
+    echo "${SSH_CLIENT%% *}"
+    return
+  fi
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    echo "${SSH_CONNECTION%% *}"
+    return
+  fi
+
+  echo "(콘솔/로컬)"
+}
+
+get_mem_available_human() {
+  # /proc/meminfo MemAvailable 기반
+  awk '
+    /MemAvailable:/ {
+      kb=$2
+      mib=kb/1024
+      gib=mib/1024
+      if (gib>=1) printf "%.1fGiB", gib
+      else printf "%.0fMiB", mib
+      exit
+    }
+  ' /proc/meminfo 2>/dev/null || echo "N/A"
+}
+
+get_disk_free_root() {
+  df -h / 2>/dev/null | awk 'NR==2 {print $4}' || echo "N/A"
+}
+
+# --- main ------------------------------------------------------------------
+
+LOGIN_USER="$(get_login_user)"
 RUN_AS="$(whoami)"
-
-# 원격 IP (환경변수 말고 who에서 추출)
-CLIENT_IP="$(who -u am i 2>/dev/null | awk '{print $NF}' | tr -d '()')"
-[[ -n "$CLIENT_IP" ]] || CLIENT_IP="(콘솔/로컬)"
-
-DISK_FREE="$(df -h / | awk 'NR==2 {print $4}')"
-MEM_AVAIL="$(awk '/MemAvailable:/ {
-  kb=$2; mib=kb/1024; gib=mib/1024;
-  if (gib>=1) printf "%.1fGiB",gib;
-  else printf "%.0fMiB",mib;
-  exit
-}' /proc/meminfo)"
+CLIENT_IP="$(get_client_ip)"
+DISK_FREE="$(get_disk_free_root)"
+MEM_AVAIL="$(get_mem_available_human)"
 
 echo "========================================"
 echo " 🖥  서버 상태 요약"
@@ -30,20 +69,34 @@ else
 fi
 
 echo " 🌐 접속 IP    : ${CLIENT_IP}"
-echo " ⏱  업타임     : $(uptime -p)"
+echo " ⏱  업타임     : $(uptime -p 2>/dev/null || echo 'N/A')"
 echo " 💾 디스크(/)  : ${DISK_FREE} 여유"
 echo " 🧠 메모리     : ${MEM_AVAIL} 여유"
 
-# Fail2Ban (root만)
+# Fail2Ban (root 권한일 때만)
 if [[ "$(id -u)" -eq 0 ]]; then
-  BANNED="$(timeout 1 fail2ban-client status sshd 2>/dev/null | awk -F': ' '/Currently banned/ {print $2}')"
-  [[ -n "$BANNED" ]] || BANNED="0"
-  echo " 🔐 Fail2Ban   : ${BANNED} IP 차단 중"
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    BANNED="$(timeout 1 fail2ban-client status sshd 2>/dev/null | awk -F': ' '/Currently banned/ {print $2}')"
+    [[ -n "${BANNED:-}" ]] || BANNED="0"
+    echo " 🔐 Fail2Ban   : ${BANNED} IP 차단 중"
+
+    if [[ "$BANNED" != "0" ]]; then
+      IPS="$(timeout 1 fail2ban-client get sshd banip 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')"
+      if [[ -n "${IPS:-}" ]]; then
+        COUNT="$(echo "$IPS" | wc -w | tr -d ' ')"
+        if [[ "$COUNT" -le 8 ]]; then
+          echo " 🧱 차단 IP    : ${IPS}"
+        else
+          HEAD8="$(echo "$IPS" | awk '{for(i=1;i<=8;i++) printf "%s%s",$i,(i<8?" ":"");}')"
+          echo " 🧱 차단 IP    : ${HEAD8} ... (+$((COUNT-8)) more)"
+        fi
+      fi
+    fi
+  else
+    echo " 🔐 Fail2Ban   : (미설치)"
+  fi
 else
   echo " 🔐 Fail2Ban   : (권한 없음)"
 fi
 
 echo "========================================"
-EOF
-
-sudo chmod 0755 /etc/update-motd.d/99-custom
