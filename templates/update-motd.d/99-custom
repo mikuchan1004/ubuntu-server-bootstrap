@@ -1,64 +1,29 @@
+sudo tee /etc/update-motd.d/99-custom >/dev/null <<'EOF'
 #!/usr/bin/env bash
 # Custom MOTD (Korean) - server status summary
-
 set -euo pipefail
 
-# 런타임 캐시( sudo/su로 SSH_* 환경변수가 사라져도 IP 유지 )
-CACHE_DIR="/run/motd"
-CACHE_USER="${SUDO_USER:-${USER:-unknown}}"
-CACHE_FILE="${CACHE_DIR}/login_${CACHE_USER}.ip"
-
-mkdir -p "$CACHE_DIR" 2>/dev/null || true
-
-get_client_ip() {
-  # SSH 접속이면 이게 제일 정확
-  if [[ -n "${SSH_CLIENT:-}" ]]; then
-    echo "${SSH_CLIENT%% *}"
-    return
-  fi
-  if [[ -n "${SSH_CONNECTION:-}" ]]; then
-    echo "${SSH_CONNECTION%% *}"
-    return
-  fi
-
-  # sudo/su로 환경이 정리됐을 때는 캐시 사용
-  if [[ -r "$CACHE_FILE" ]]; then
-    cat "$CACHE_FILE"
-    return
-  fi
-
-  echo "(콘솔/로컬)"
-}
-
-get_login_user() {
-  # root로 승격되어도 “원래 로그인한 사용자” 표시
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    echo "${SUDO_USER}"
-    return
-  fi
-  if [[ -n "${LOGNAME:-}" ]]; then
-    echo "${LOGNAME}"
-    return
-  fi
-  if [[ -n "${USER:-}" ]]; then
-    echo "${USER}"
-    return
-  fi
-  whoami
-}
-
-# SSH 접속이면 IP 캐시 저장(다음 sudo/su에서도 유지)
+# 로그인 IP (SSH 접속 기준)
 if [[ -n "${SSH_CLIENT:-}" ]]; then
-  echo "${SSH_CLIENT%% *}" > "$CACHE_FILE" 2>/dev/null || true
+  CLIENT_IP="${SSH_CLIENT%% *}"
+else
+  CLIENT_IP="(콘솔/로컬)"
 fi
 
-CLIENT_IP="$(get_client_ip)"
-LOGIN_USER="$(get_login_user)"
+# 로그인 사용자 / 현재 권한
+LOGIN_USER="${SUDO_USER:-${USER:-unknown}}"
 RUN_AS="$(whoami)"
 
+# 디스크 / 메모리
 DISK_FREE="$(df -h / | awk 'NR==2 {print $4}')"
-# free 출력 포맷이 달라도 항상 값이 나오게 마지막 필드 사용
-MEM_AVAIL="$(free -h | awk '/^Mem:/ {print $NF}')"
+MEM_AVAIL="$(awk '/MemAvailable:/ {
+  kb=$2
+  mib=kb/1024
+  gib=mib/1024
+  if (gib>=1) printf "%.1fGiB",gib
+  else printf "%.0fMiB",mib
+  exit
+}' /proc/meminfo)"
 
 echo "========================================"
 echo " 🖥  서버 상태 요약"
@@ -76,28 +41,16 @@ echo " ⏱  업타임     : $(uptime -p)"
 echo " 💾 디스크(/)  : ${DISK_FREE} 여유"
 echo " 🧠 메모리     : ${MEM_AVAIL} 여유"
 
-# Fail2Ban 상태 + 차단 IP 목록 (root만 가능)
+# Fail2Ban (root만)
 if [[ "$(id -u)" -eq 0 ]]; then
   BANNED="$(timeout 1 fail2ban-client status sshd 2>/dev/null | awk -F': ' '/Currently banned/ {print $2}')"
   [[ -n "$BANNED" ]] || BANNED="0"
   echo " 🔐 Fail2Ban   : ${BANNED} IP 차단 중"
-
-  if [[ "$BANNED" != "0" ]]; then
-    IPS="$(timeout 1 fail2ban-client get sshd banip 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')"
-    if [[ -n "$IPS" ]]; then
-      COUNT="$(wc -w <<<"$IPS" | tr -d ' ')"
-      if [[ "$COUNT" -le 6 ]]; then
-        echo " 🧱 차단 IP    : ${IPS}"
-      else
-        HEAD6="$(awk '{for(i=1;i<=6;i++) printf "%s%s",$i,(i<6?" ":"");}' <<<"$IPS")"
-        echo " 🧱 차단 IP    : ${HEAD6} ... (+$((COUNT-6)) more)"
-      fi
-    else
-      echo " 🧱 차단 IP    : (목록 조회 불가)"
-    fi
-  fi
 else
   echo " 🔐 Fail2Ban   : (권한 없음)"
 fi
 
 echo "========================================"
+EOF
+
+sudo chmod 0755 /etc/update-motd.d/99-custom
