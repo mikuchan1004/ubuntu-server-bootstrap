@@ -1,27 +1,20 @@
 sudo tee /etc/update-motd.d/99-custom >/dev/null <<'EOF'
 #!/usr/bin/env bash
-# Custom MOTD (Korean) - server status summary
 set -euo pipefail
 
-# 로그인 IP (SSH 접속 기준)
-if [[ -n "${SSH_CLIENT:-}" ]]; then
-  CLIENT_IP="${SSH_CLIENT%% *}"
-else
-  CLIENT_IP="(콘솔/로컬)"
-fi
-
-# 로그인 사용자 / 현재 권한
-LOGIN_USER="${SUDO_USER:-${USER:-unknown}}"
+# 실제 로그인 사용자 (sudo/su로 바뀌어도 원래 사용자)
+LOGIN_USER="$(logname 2>/dev/null || echo unknown)"
 RUN_AS="$(whoami)"
 
-# 디스크 / 메모리
+# 원격 IP (환경변수 말고 who에서 추출)
+CLIENT_IP="$(who -u am i 2>/dev/null | awk '{print $NF}' | tr -d '()')"
+[[ -n "$CLIENT_IP" ]] || CLIENT_IP="(콘솔/로컬)"
+
 DISK_FREE="$(df -h / | awk 'NR==2 {print $4}')"
 MEM_AVAIL="$(awk '/MemAvailable:/ {
-  kb=$2
-  mib=kb/1024
-  gib=mib/1024
-  if (gib>=1) printf "%.1fGiB",gib
-  else printf "%.0fMiB",mib
+  kb=$2; mib=kb/1024; gib=mib/1024;
+  if (gib>=1) printf "%.1fGiB",gib;
+  else printf "%.0fMiB",mib;
   exit
 }' /proc/meminfo)"
 
