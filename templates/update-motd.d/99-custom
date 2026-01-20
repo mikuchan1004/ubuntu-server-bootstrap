@@ -1,53 +1,71 @@
-
-#!/bin/bash
+#!/usr/bin/env bash
 # Custom MOTD (Korean) - server status summary
 
+set -euo pipefail
+
+# 런타임 캐시( sudo/su로 SSH_* 환경변수가 사라져도 IP 유지 )
+CACHE_DIR="/run/motd"
+CACHE_USER="${SUDO_USER:-${USER:-unknown}}"
+CACHE_FILE="${CACHE_DIR}/login_${CACHE_USER}.ip"
+
+mkdir -p "$CACHE_DIR" 2>/dev/null || true
+
 get_client_ip() {
-  if [ -n "${SSH_CLIENT:-}" ]; then
+  # SSH 접속이면 이게 제일 정확
+  if [[ -n "${SSH_CLIENT:-}" ]]; then
     echo "${SSH_CLIENT%% *}"
     return
   fi
-  if [ -n "${SSH_CONNECTION:-}" ]; then
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
     echo "${SSH_CONNECTION%% *}"
     return
   fi
-  if [ -n "${LOGIN_IP:-}" ]; then
-    echo "${LOGIN_IP}"
+
+  # sudo/su로 환경이 정리됐을 때는 캐시 사용
+  if [[ -r "$CACHE_FILE" ]]; then
+    cat "$CACHE_FILE"
     return
   fi
+
   echo "(콘솔/로컬)"
 }
 
 get_login_user() {
-  if [ -n "${SUDO_USER:-}" ]; then
+  # root로 승격되어도 “원래 로그인한 사용자” 표시
+  if [[ -n "${SUDO_USER:-}" ]]; then
     echo "${SUDO_USER}"
     return
   fi
-  if [ -n "${LOGNAME:-}" ]; then
+  if [[ -n "${LOGNAME:-}" ]]; then
     echo "${LOGNAME}"
     return
   fi
-  if [ -n "${USER:-}" ]; then
+  if [[ -n "${USER:-}" ]]; then
     echo "${USER}"
     return
   fi
   whoami
 }
 
-if [ -n "${SSH_CLIENT:-}" ]; then
-  export LOGIN_IP="${SSH_CLIENT%% *}"
+# SSH 접속이면 IP 캐시 저장(다음 sudo/su에서도 유지)
+if [[ -n "${SSH_CLIENT:-}" ]]; then
+  echo "${SSH_CLIENT%% *}" > "$CACHE_FILE" 2>/dev/null || true
 fi
 
 CLIENT_IP="$(get_client_ip)"
 LOGIN_USER="$(get_login_user)"
 RUN_AS="$(whoami)"
 
+DISK_FREE="$(df -h / | awk 'NR==2 {print $4}')"
+# free 출력 포맷이 달라도 항상 값이 나오게 마지막 필드 사용
+MEM_AVAIL="$(free -h | awk '/^Mem:/ {print $NF}')"
+
 echo "========================================"
 echo " 🖥  서버 상태 요약"
 echo "----------------------------------------"
 echo " 📅 현재 시간  : $(date '+%Y-%m-%d %H:%M:%S')"
 
-if [ "$LOGIN_USER" = "$RUN_AS" ]; then
+if [[ "$LOGIN_USER" == "$RUN_AS" ]]; then
   echo " 👤 로그인 계정: ${LOGIN_USER}"
 else
   echo " 👤 로그인 계정: ${LOGIN_USER} (현재 권한: ${RUN_AS})"
@@ -55,22 +73,23 @@ fi
 
 echo " 🌐 접속 IP    : ${CLIENT_IP}"
 echo " ⏱  업타임     : $(uptime -p)"
-echo " 💾 디스크(/)  : $(df -h / | awk 'NR==2 {print $4}') 여유"
-echo " 🧠 메모리     : $(free -h | awk '/^Mem:/ {print $7}') 여유"
+echo " 💾 디스크(/)  : ${DISK_FREE} 여유"
+echo " 🧠 메모리     : ${MEM_AVAIL} 여유"
 
-if [ "$(id -u)" -eq 0 ]; then
+# Fail2Ban 상태 + 차단 IP 목록 (root만 가능)
+if [[ "$(id -u)" -eq 0 ]]; then
   BANNED="$(timeout 1 fail2ban-client status sshd 2>/dev/null | awk -F': ' '/Currently banned/ {print $2}')"
-  [ -n "$BANNED" ] || BANNED="0"
+  [[ -n "$BANNED" ]] || BANNED="0"
   echo " 🔐 Fail2Ban   : ${BANNED} IP 차단 중"
 
-  if [ "$BANNED" != "0" ]; then
+  if [[ "$BANNED" != "0" ]]; then
     IPS="$(timeout 1 fail2ban-client get sshd banip 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')"
-    if [ -n "$IPS" ]; then
-      COUNT="$(echo "$IPS" | wc -w | tr -d ' ')"
-      if [ "$COUNT" -le 6 ]; then
+    if [[ -n "$IPS" ]]; then
+      COUNT="$(wc -w <<<"$IPS" | tr -d ' ')"
+      if [[ "$COUNT" -le 6 ]]; then
         echo " 🧱 차단 IP    : ${IPS}"
       else
-        HEAD6="$(echo "$IPS" | awk '{for(i=1;i<=6;i++) printf "%s%s",$i,(i<6?" ":"");}')"
+        HEAD6="$(awk '{for(i=1;i<=6;i++) printf "%s%s",$i,(i<6?" ":"");}' <<<"$IPS")"
         echo " 🧱 차단 IP    : ${HEAD6} ... (+$((COUNT-6)) more)"
       fi
     else
@@ -82,4 +101,3 @@ else
 fi
 
 echo "========================================"
-
